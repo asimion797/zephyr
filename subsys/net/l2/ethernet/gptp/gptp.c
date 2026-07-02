@@ -38,6 +38,25 @@ static struct k_thread gptp_thread_data;
 struct gptp_domain gptp_domain;
 struct gptp_clock_data gptp_clock;
 
+__weak void gptp_get_initial_log_intervals(int8_t *log_sync_itv, int8_t *log_pdelay_req_itv,
+					   int8_t *log_announce_itv)
+{
+	ARG_UNUSED(log_sync_itv);
+	ARG_UNUSED(log_pdelay_req_itv);
+	ARG_UNUSED(log_announce_itv);
+}
+
+static void gptp_init_log_intervals(void)
+{
+	gptp_domain.initial_log_itv.sync = CONFIG_NET_GPTP_INIT_LOG_SYNC_ITV;
+	gptp_domain.initial_log_itv.pdelay_req = CONFIG_NET_GPTP_INIT_LOG_PDELAY_REQ_ITV;
+	gptp_domain.initial_log_itv.announce = CONFIG_NET_GPTP_INIT_LOG_ANNOUNCE_ITV;
+
+	gptp_get_initial_log_intervals(&gptp_domain.initial_log_itv.sync,
+				       &gptp_domain.initial_log_itv.pdelay_req,
+				       &gptp_domain.initial_log_itv.announce);
+}
+
 int gptp_get_port_number(struct net_if *iface)
 {
 	struct ethernet_context *ctx = net_if_l2_data(iface);
@@ -306,6 +325,11 @@ static void gptp_handle_msg(struct net_pkt *pkt)
 		break;
 
 	case GPTP_ANNOUNCE_MESSAGE:
+		if (IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+			NET_DBG("Ignoring Announce in static role mode");
+			break;
+		}
+
 		if (GPTP_ANNOUNCE_CHECK_LEN(pkt)) {
 			NET_WARN("Invalid length for %s packet "
 				 "should have %zd bytes but has %zd bytes",
@@ -485,8 +509,7 @@ static void gptp_init_clock_ds(void)
 	global_ds->sys_flags.all = default_ds->flags.all;
 	global_ds->sys_current_utc_offset = default_ds->cur_utc_offset;
 	global_ds->sys_time_source = default_ds->time_source;
-	global_ds->clk_master_sync_itv =
-		NSEC_PER_SEC * GPTP_POW2(CONFIG_NET_GPTP_INIT_LOG_SYNC_ITV);
+	global_ds->clk_master_sync_itv = NSEC_PER_SEC * GPTP_POW2(GPTP_INIT_LOG_SYNC_ITV());
 }
 
 static void gptp_init_port_ds(int port)
@@ -514,19 +537,18 @@ static void gptp_init_port_ds(int port)
 	port_ds->neighbor_prop_delay_thresh = GPTP_NEIGHBOR_PROP_DELAY_THR;
 	port_ds->delay_asymmetry = 0;
 
-	port_ds->ini_log_announce_itv = CONFIG_NET_GPTP_INIT_LOG_ANNOUNCE_ITV;
+	port_ds->ini_log_announce_itv = GPTP_INIT_LOG_ANNOUNCE_ITV();
 	port_ds->cur_log_announce_itv = port_ds->ini_log_announce_itv;
 	port_ds->announce_receipt_timeout =
 		CONFIG_NET_GPTP_ANNOUNCE_RECEIPT_TIMEOUT;
 
 	/* Subtract 1 to divide by 2 the sync interval. */
-	port_ds->ini_log_half_sync_itv = CONFIG_NET_GPTP_INIT_LOG_SYNC_ITV - 1;
+	port_ds->ini_log_half_sync_itv = GPTP_INIT_LOG_SYNC_ITV() - 1;
 	port_ds->cur_log_half_sync_itv = port_ds->ini_log_half_sync_itv;
 	port_ds->sync_receipt_timeout = CONFIG_NET_GPTP_SYNC_RECEIPT_TIMEOUT;
 	port_ds->sync_receipt_timeout_time_itv = 10000000U; /* 10ms */
 
-	port_ds->ini_log_pdelay_req_itv =
-		CONFIG_NET_GPTP_INIT_LOG_PDELAY_REQ_ITV;
+	port_ds->ini_log_pdelay_req_itv = GPTP_INIT_LOG_PDELAY_REQ_ITV();
 	port_ds->cur_log_pdelay_req_itv = port_ds->ini_log_pdelay_req_itv;
 	port_ds->allowed_lost_responses = GPTP_ALLOWED_LOST_RESP;
 	port_ds->version = GPTP_VERSION;
@@ -582,7 +604,10 @@ static void gptp_state_machine(void)
 			case GPTP_PORT_SLAVE:
 				gptp_md_state_machines(port);
 				gptp_mi_port_sync_state_machines(port);
-				gptp_mi_port_bmca_state_machines(port);
+				if (!IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+					gptp_mi_port_bmca_state_machines(port);
+				}
+
 				break;
 			default:
 				NET_DBG("%s: Unknown port state", __func__);
@@ -969,6 +994,8 @@ int gptp_get_port_data(struct gptp_domain *domain,
 static void init_ports(void)
 {
 	net_if_foreach(gptp_add_port, &gptp_domain.default_ds.nb_ports);
+
+	gptp_init_log_intervals();
 
 	/* Only initialize the state machine once the ports are known. */
 	gptp_init_state_machine();

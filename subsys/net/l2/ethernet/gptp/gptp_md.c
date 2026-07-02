@@ -930,6 +930,23 @@ static void gptp_md_sync_send_state_machine(int port)
 
 void gptp_md_state_machines(int port)
 {
+	if (IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+		switch (GPTP_GLOBAL_DS()->selected_role[port]) {
+		case GPTP_PORT_MASTER:
+			gptp_md_pdelay_resp_state_machine(port);
+			gptp_md_sync_send_state_machine(port);
+			break;
+		case GPTP_PORT_SLAVE:
+			gptp_md_pdelay_req_state_machine(port);
+			gptp_md_sync_receive_state_machine(port);
+			break;
+		default:
+			break;
+		}
+
+		return;
+	}
+
 	gptp_md_pdelay_req_state_machine(port);
 	gptp_md_pdelay_resp_state_machine(port);
 

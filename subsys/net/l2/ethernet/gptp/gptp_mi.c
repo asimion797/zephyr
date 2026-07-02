@@ -270,8 +270,7 @@ static void gptp_mi_init_bmca_data(int port)
 
 	(void)memset(bmca_data, 0, sizeof(struct gptp_port_bmca_data));
 
-	gptp_set_time_itv(&bmca_data->announce_interval, 1,
-			  CONFIG_NET_GPTP_INIT_LOG_ANNOUNCE_ITV);
+	gptp_set_time_itv(&bmca_data->announce_interval, 1, GPTP_INIT_LOG_ANNOUNCE_ITV());
 
 	(void)memset(&bmca_data->port_priority, 0xFF,
 		     sizeof(struct gptp_priority_vector));
@@ -319,10 +318,13 @@ void gptp_mi_init_state_machine(void)
 	     port < (GPTP_PORT_START + CONFIG_NET_GPTP_NUM_PORTS); port++) {
 		gptp_mi_init_port_sync_sync_rcv_sm(port);
 		gptp_mi_init_port_sync_sync_send_sm(port);
-		gptp_mi_init_port_announce_rcv_sm(port);
-		gptp_mi_init_port_announce_info_sm(port);
-		gptp_mi_init_port_announce_transmit_sm(port);
-		gptp_mi_init_bmca_data(port);
+
+		if (!IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+			gptp_mi_init_port_announce_rcv_sm(port);
+			gptp_mi_init_port_announce_info_sm(port);
+			gptp_mi_init_port_announce_transmit_sm(port);
+			gptp_mi_init_bmca_data(port);
+		}
 	}
 
 	gptp_mi_init_site_sync_sync_sm();
@@ -860,7 +862,14 @@ static void gptp_update_local_port_clock(void)
 		return;
 	}
 
-	port_ds->neighbor_rate_ratio_valid = false;
+	/*
+	 * In static role mode, keep using the latest valid neighbor rate ratio so
+	 * Sync/FUP processing can continue updating the local clock between PDelay
+	 * exchanges.
+	 */
+	if (!IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+		port_ds->neighbor_rate_ratio_valid = false;
+	}
 
 	second_diff = global_ds->sync_receipt_time.second -
 		(global_ds->sync_receipt_local_time / NSEC_PER_SEC);
@@ -1006,7 +1015,7 @@ static void gptp_mi_set_ps_sync_cmss(void)
 	       GPTP_CLOCK_ID_LEN);
 
 	sync_info->src_port_id.port_number = 0U;
-	sync_info->log_msg_interval = CONFIG_NET_GPTP_INIT_LOG_SYNC_ITV;
+	sync_info->log_msg_interval = GPTP_INIT_LOG_SYNC_ITV();
 	sync_info->upstream_tx_time = global_ds->local_time.low;
 
 	state->pss_snd.sync_receipt_timeout_time = UINT64_MAX;
@@ -1041,8 +1050,29 @@ static void gptp_mi_clk_master_sync_snd_state_machine(void)
 {
 	struct gptp_clk_master_sync_snd_state *state;
 	uint64_t current_time;
+	uint64_t sync_time;
+	uint64_t max_delta;
+	uint64_t now;
 
 	state = &GPTP_STATE()->clk_master_sync_send;
+
+	if (IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+		now = gptp_get_current_master_time_nanosecond();
+		sync_time = state->sync_send_time.low;
+		max_delta = 2U * GPTP_GLOBAL_DS()->clk_master_sync_itv;
+
+		/*
+		 * In static role mode, the local PTP clock can be stepped
+		 * externally. Re-base the Sync deadline if it belongs to a
+		 * different clock timeline, otherwise a backward step can stop
+		 * Sync transmission until the clock catches up with the old
+		 * deadline.
+		 */
+		if ((sync_time == 0) || ((sync_time > now) && ((sync_time - now) > max_delta)) ||
+		    ((now > sync_time) && ((now - sync_time) > max_delta))) {
+			state->sync_send_time.low = now;
+		}
+	}
 
 	switch (state->state) {
 	case GPTP_CMS_SND_INITIALIZING:
@@ -1651,6 +1681,7 @@ static void gptp_clear_reselect_tree(void)
 	GPTP_GLOBAL_DS()->reselect_array = 0;
 }
 
+#if !defined(CONFIG_NET_GPTP_STATIC_ROLE)
 static int compute_best_vector(void)
 {
 	struct gptp_priority_vector *gm_prio;
@@ -1935,6 +1966,100 @@ static void gptp_updt_roles_tree(void)
 	}
 }
 
+#else
+__weak void gptp_get_static_role(int port, bool *port_master, bool *port_enabled)
+{
+	ARG_UNUSED(port);
+	ARG_UNUSED(port_master);
+	ARG_UNUSED(port_enabled);
+}
+
+static void gptp_updt_roles_static_tree(void)
+{
+	struct gptp_priority_vector *gm_prio = &GPTP_GLOBAL_DS()->gm_priority;
+	struct gptp_default_ds *default_ds = GPTP_DEFAULT_DS();
+	struct gptp_global_ds *global_ds = GPTP_GLOBAL_DS();
+	struct gptp_port_ds *port_ds;
+	enum gptp_port_state role;
+	bool has_enabled_port = false;
+	bool port_enabled;
+	bool port_master;
+	int port;
+
+	for (port = GPTP_PORT_START; port < GPTP_PORT_END; port++) {
+		port_ds = GPTP_PORT_DS(port);
+
+		if (IS_ENABLED(CONFIG_NET_GPTP_GM_CAPABLE)) {
+			port_master = true;
+			port_enabled = true;
+		} else {
+			port_master = false;
+			port_enabled = (port == GPTP_PORT_START);
+		}
+
+		gptp_get_static_role(port, &port_master, &port_enabled);
+
+		if (!port_enabled) {
+			/*
+			 * Keep disabled static ports in PASSIVE state while marking the
+			 * port disabled below. The state machines key off ptt_port_enabled
+			 * and as_capable before participating in gPTP.
+			 */
+			role = GPTP_PORT_PASSIVE;
+		} else {
+			role = port_master ? GPTP_PORT_MASTER : GPTP_PORT_SLAVE;
+			has_enabled_port = true;
+		}
+
+		gptp_change_port_state(port, role);
+
+		port_ds->ptt_port_enabled = port_enabled;
+		port_ds->as_capable = port_enabled;
+	}
+
+	global_ds->gm_present = has_enabled_port;
+
+	if (has_enabled_port) {
+		global_ds->global_flags.octets[1] = global_ds->sys_flags.octets[1];
+		global_ds->current_utc_offset = global_ds->sys_current_utc_offset;
+		global_ds->time_source = global_ds->sys_time_source;
+		global_ds->master_steps_removed = 0U;
+
+		(void)memset(gm_prio, 0, sizeof(struct gptp_priority_vector));
+
+		gm_prio->root_system_id.grand_master_prio1 = default_ds->priority1;
+		gm_prio->root_system_id.grand_master_prio2 = default_ds->priority2;
+		gm_prio->root_system_id.clk_quality.clock_class =
+			default_ds->clk_quality.clock_class;
+		gm_prio->root_system_id.clk_quality.clock_accuracy =
+			default_ds->clk_quality.clock_accuracy;
+		gm_prio->root_system_id.clk_quality.offset_scaled_log_var =
+			net_htons(default_ds->clk_quality.offset_scaled_log_var);
+
+		memcpy(gm_prio->root_system_id.grand_master_id, default_ds->clk_id,
+		       GPTP_CLOCK_ID_LEN);
+		memcpy(gm_prio->src_port_id.clk_id, default_ds->clk_id, GPTP_CLOCK_ID_LEN);
+
+		gm_prio->steps_removed = 0U;
+
+		global_ds->path_trace.len = net_htons(GPTP_CLOCK_ID_LEN);
+		memcpy(global_ds->path_trace.path_sequence, default_ds->clk_id, GPTP_CLOCK_ID_LEN);
+	}
+
+	/* Assign the port role for port 0. */
+	for (port = GPTP_PORT_START; port < GPTP_PORT_END; port++) {
+		if (global_ds->selected_role[port] == GPTP_PORT_SLAVE) {
+			gptp_change_port_state(0, GPTP_PORT_PASSIVE);
+			break;
+		}
+	}
+
+	if (port == GPTP_PORT_END) {
+		gptp_change_port_state(0, has_enabled_port ? GPTP_PORT_SLAVE : GPTP_PORT_PASSIVE);
+	}
+}
+#endif
+
 static void gptp_set_selected_tree(void)
 {
 	/* Set all the elements of the selected array to TRUE. */
@@ -1992,7 +2117,11 @@ static void gptp_mi_port_role_selection_state_machine(void)
 	case GPTP_PR_SELECTION_ROLE_SELECTION:
 		if (GPTP_GLOBAL_DS()->reselect_array != 0) {
 			gptp_clear_reselect_tree();
+#if defined(CONFIG_NET_GPTP_STATIC_ROLE)
+			gptp_updt_roles_static_tree();
+#else
 			gptp_updt_roles_tree();
+#endif
 			gptp_set_selected_tree();
 		}
 
@@ -2129,9 +2258,16 @@ void gptp_mi_state_machines(void)
 	 * sending it to the SiteSyncSync entity. And the SiteSyncSync state machine
 	 * does not make sanity check.
 	 */
-	if (memcmp(GPTP_GLOBAL_DS()->gm_priority.root_system_id.grand_master_id,
-			   GPTP_DEFAULT_DS()->clk_id, GPTP_CLOCK_ID_LEN) == 0 &&
-			   GPTP_GLOBAL_DS()->gm_present) {
+	if (IS_ENABLED(CONFIG_NET_GPTP_STATIC_ROLE)) {
+		for (int port = GPTP_PORT_START; port < GPTP_PORT_END; port++) {
+			if (GPTP_GLOBAL_DS()->selected_role[port] == GPTP_PORT_MASTER) {
+				gptp_mi_clk_master_sync_snd_state_machine();
+				break;
+			}
+		}
+	} else if (memcmp(GPTP_GLOBAL_DS()->gm_priority.root_system_id.grand_master_id,
+			  GPTP_DEFAULT_DS()->clk_id, GPTP_CLOCK_ID_LEN) == 0 &&
+		   GPTP_GLOBAL_DS()->gm_present) {
 		gptp_mi_clk_master_sync_snd_state_machine();
 	}
 #endif

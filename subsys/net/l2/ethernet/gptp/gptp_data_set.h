@@ -62,6 +62,10 @@ extern "C" {
 	(&gptp_domain.port_param_ds[GPTP_PORT_INDEX(port)])
 #endif
 
+#define GPTP_INIT_LOG_SYNC_ITV()       (gptp_domain.initial_log_itv.sync)
+#define GPTP_INIT_LOG_PDELAY_REQ_ITV() (gptp_domain.initial_log_itv.pdelay_req)
+#define GPTP_INIT_LOG_ANNOUNCE_ITV()   (gptp_domain.initial_log_itv.announce)
+
 #define CLEAR_RESELECT(global_ds, port) \
 	(global_ds->reselect_array &= (~(1 << (port - 1))))
 #define SET_RESELECT(global_ds, port) \
@@ -140,6 +144,20 @@ enum gptp_received_info {
 	GPTP_RCVD_INFO_REPEATED_MASTER_INFO,
 	GPTP_RCVD_INFO_INFERIOR_MASTER_INFO,
 	GPTP_RCVD_INFO_OTHER_INFO,
+};
+
+/**
+ * @brief gPTP log intervals.
+ */
+struct gptp_log_itv {
+	/** Sync log message interval. */
+	int8_t sync;
+
+	/** PDelay request log message interval. */
+	int8_t pdelay_req;
+
+	/** Announce log message interval. */
+	int8_t announce;
 };
 
 /**
@@ -551,6 +569,9 @@ struct gptp_domain {
 
 	/** Current State of the MI State Machines for this gPTP domain. */
 	struct gptp_states state;
+
+	/** Initial log intervals used when gPTP is initialized. */
+	struct gptp_log_itv initial_log_itv;
 
 	/** Port Parameter Data Sets for this gPTP domain. */
 	struct gptp_port_ds port_ds[CONFIG_NET_GPTP_NUM_PORTS];

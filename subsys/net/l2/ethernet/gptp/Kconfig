@@ -187,4 +187,12 @@ config NET_GPTP_MONITOR_SYNC_STATUS
 	  Monitor real-time synchronization status, like synchronization offset,
 	  frequency offset and so on. This will print continuous messages.
 
+config NET_GPTP_STATIC_ROLE
+	bool "Use static gPTP port roles"
+	default n
+	help
+	  Bypass the Best Master Clock Algorithm and use static port roles.
+	  Platform code may override the weak static-role hooks to select the
+	  role used by each port.
+
 endif # NET_GPTP
