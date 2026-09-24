@@ -309,6 +309,17 @@
 			status = "disabled";
 		};
 
+		sdmmc2: mmc@e120c000 {
+			compatible = "microchip,sama7g5-sdmmc";
+			reg = <0xe120c000 0x4000>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 82 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+			clocks = <&pmc PMC_TYPE_PERIPHERAL 82>, <&pmc PMC_TYPE_GCK 82>;
+			clock-names = "hclock", "multclk";
+			assigned-clock-rates = <200000000>;
+			status = "disabled";
+		};
+
 		pwm: pwm@e1604000 {
 			compatible = "atmel,sam-pwm";
 			reg = <0xe1604000 0x4000>;
