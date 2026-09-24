@@ -1,0 +1,50 @@
+# Copyright (c) 2026 Andrei Simion
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Microchip ATWILC3000 Wi-Fi and Bluetooth Low Energy module, with the Wi-Fi
+  function attached over SDIO.
+
+  The node is a child of an SDHC controller. The module has no firmware
+  storage: the host downloads the firmware after every power-up.
+
+compatible: "microchip,wilc3000"
+
+include: [sd-device.yaml]
+
+properties:
+  enable-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      Module enable. Asserting it powers the module up, either by driving
+      CHIP_EN directly or through the enable input of the module regulator.
+
+  reset-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      RESETN line of the module. The signal is active low.
+
+  irq-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      IRQN line, asserted by the module when it has pending events. The
+      signal is active low.
+
+examples:
+  - |
+    &sdmmc2 {
+            bus-width = <4>;
+            non-removable;
+            status = "okay";
+
+            wilc3000 {
+                    compatible = "microchip,wilc3000";
+                    enable-gpios = <&pioe 0 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+                    reset-gpios = <&piod 2 (GPIO_ACTIVE_LOW | GPIO_PULL_DOWN)>;
+                    irq-gpios = <&piod 10 GPIO_ACTIVE_LOW>;
+                    status = "okay";
+            };
+    };
